@@ -28,7 +28,7 @@ package net.bdew.hafen.combiner
 import java.io.File
 
 import scala.annotation.tailrec
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.{ExecutionContext, Future, Promise}
 
 class InputSet(val tileSets: List[TileSet]) {
   def mergeTiles() = doMergeAll(tileSets)
@@ -52,10 +52,8 @@ class InputSet(val tileSets: List[TileSet]) {
     for {
       set1 <- sets
       set2 <- sets if set2 != set1
-      (fp1, tile1) <- set1.fingerPrints
-      tile2 <- set2.fingerPrints.get(fp1)
-      coord1 <- set1.reverse.get(tile1)
-      coord2 <- set2.reverse.get(tile2)
+      (fp1, coord1) <- set1.fingerPrints
+      coord2 <- set2.fingerPrints.get(fp1)
     } {
       val delta = coord2 - coord1
       return MergeMore(sets.filterNot(x => x == set1 || x == set2) :+ set1.merge(set2, delta))
@@ -74,11 +72,27 @@ object InputSet {
           List.empty
         } else {
           val globFp = FingerPrints.from(new File(path, "fingerprints.txt"))
-          path.listFiles().toList filter (x => x.canRead && x.isDirectory) map (dir => Future(TileSet.load(dir, globFp)))
+          for (file <- path.listFiles().toList if file.canRead) yield {
+            if (file.isDirectory)
+              Future(TileSet.load(file, globFp))
+            else if (file.getName.endsWith(".mpk"))
+              Future(Some(TileSet.loadMPK(file)))
+            else
+              Promise.successful(None).future
+          }
         }
       }).flatten
     }
     inputs.waitUntilDone()
     new InputSet(inputs.result.flatten)
+  }
+
+  def loadSingle(path: File) = {
+    if (!path.isDirectory || !path.canRead) {
+      println("!!! Unable to read source: %s".format(path.getAbsolutePath))
+      sys.exit(-1)
+    }
+    val globFp = FingerPrints.from(new File(path, "fingerprints.txt"))
+    path.listFiles().toList filter (x => x.canRead && x.isDirectory) flatMap (dir => TileSet.load(dir, globFp).map(x => dir -> x))
   }
 }
